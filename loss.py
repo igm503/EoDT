@@ -24,6 +24,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from scipy.optimize import linear_sum_assignment
 from torchvision.ops.boxes import box_area
+import numpy as np
 
 
 # ============================================================================
@@ -103,6 +104,7 @@ class HungarianMatcher(nn.Module):
         cost_giou: float = 2.0,
         focal_alpha: float = 0.25,
         focal_gamma: float = 2.0,
+        group_detr: int = 1,
     ):
         super().__init__()
         self.cost_class = cost_class
@@ -110,6 +112,7 @@ class HungarianMatcher(nn.Module):
         self.cost_giou = cost_giou
         self.focal_alpha = focal_alpha
         self.focal_gamma = focal_gamma
+        self.group_detr = group_detr
 
     @torch.no_grad()
     def forward(self, pred_logits, pred_boxes, targets):
@@ -153,19 +156,40 @@ class HungarianMatcher(nn.Module):
             self.cost_bbox * cost_bbox +
             self.cost_giou * cost_giou
         )
-        C = C.view(bs, num_queries, -1).cpu()
+        C = C.view(bs, num_queries, -1)
 
-        # Handle NaN/Inf
+        # Handle NaN/Inf (on GPU before transfer)
         if C.numel() > 0:
-            max_cost = C[~(C.isinf() | C.isnan())].max() if (~(C.isinf() | C.isnan())).any() else 0
-            C[C.isinf() | C.isnan()] = max_cost * 2
+            is_inf_nan = C.isinf() | C.isnan()
+            if is_inf_nan.any():
+                max_cost = C[~is_inf_nan].max() if (~is_inf_nan).any() else 0
+                C = C.clone()
+                C[is_inf_nan] = max_cost * 2
 
-        # Run Hungarian matching per image
+        C = C.cpu()
+
+        # Run Hungarian matching per image (with group DETR support)
         sizes = [len(v["boxes"]) for v in targets]
-        indices = [
-            linear_sum_assignment(c[i].numpy())
-            for i, c in enumerate(C.split(sizes, -1))
-        ]
+        g_num_queries = num_queries // self.group_detr
+        C_list = C.split(g_num_queries, dim=1)
+        
+        indices = []
+        for g_i in range(self.group_detr):
+            C_g = C_list[g_i]
+            indices_g = [
+                linear_sum_assignment(c[i].numpy())
+                for i, c in enumerate(C_g.split(sizes, -1))
+            ]
+            if g_i == 0:
+                indices = indices_g
+            else:
+                indices = [
+                    (
+                        np.concatenate([idx1[0], idx2[0] + g_num_queries * g_i]),
+                        np.concatenate([idx1[1], idx2[1]])
+                    )
+                    for idx1, idx2 in zip(indices, indices_g)
+                ]
 
         return [
             (torch.as_tensor(i, dtype=torch.int64), torch.as_tensor(j, dtype=torch.int64))
@@ -216,6 +240,7 @@ class DETRLoss(nn.Module):
         matcher_cost_class: float = 2.0,
         matcher_cost_bbox: float = 5.0,
         matcher_cost_giou: float = 2.0,
+        group_detr: int = 1,
     ):
         super().__init__()
         self.num_classes = num_classes
@@ -231,6 +256,7 @@ class DETRLoss(nn.Module):
             cost_giou=matcher_cost_giou,
             focal_alpha=focal_alpha,
             focal_gamma=focal_gamma,
+            group_detr=group_detr,
         )
 
     def _get_src_permutation_idx(self, indices):
@@ -268,7 +294,7 @@ class DETRLoss(nn.Module):
         neg_weights = prob ** gamma
 
         # Build index for positive samples
-        pos_ind = [idx[0], idx[1], target_classes_o]
+        pos_ind = (idx[0], idx[1], target_classes_o)
 
         # Soft target: blend of predicted prob and IoU
         t = prob[pos_ind].pow(alpha) * pos_ious.pow(1 - alpha)
@@ -356,29 +382,54 @@ class DETRLoss(nn.Module):
 # Test
 # ============================================================================
 
+
 if __name__ == "__main__":
+    import time
+    from torch.profiler import profile, record_function, ProfilerActivity
+    
     torch.manual_seed(42)
-
-    batch_size = 2
-    num_queries = 100
+    
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Device: {device}")
+    
+    batch_size = 64
+    num_queries = 300
     num_classes = 80
+    num_gt_per_image = 20
+    
+    pred_logits = torch.randn(batch_size, num_queries, num_classes, device=device)
+    pred_boxes = torch.sigmoid(torch.randn(batch_size, num_queries, 4, device=device))
 
-    # Fake model outputs
-    pred_logits = torch.randn(batch_size, num_queries, num_classes)
-    pred_boxes = torch.sigmoid(torch.randn(batch_size, num_queries, 4))
-
-    # Fake COCO-style targets
+    print(pred_logits.shape, pred_boxes.shape)
+    
     targets = [
         {
-            "boxes": torch.tensor([[0.5, 0.5, 0.2, 0.3], [0.3, 0.7, 0.1, 0.2]]),
-            "labels": torch.tensor([0, 5]),
-        },
-        {
-            "boxes": torch.tensor([[0.6, 0.4, 0.25, 0.25]]),
-            "labels": torch.tensor([12]),
-        },
+            "boxes": torch.rand(num_gt_per_image, 4),
+            "labels": torch.randint(0, num_classes, (num_gt_per_image,)),
+        }
+        for _ in range(batch_size)
     ]
-
+    
     criterion = DETRLoss(num_classes=num_classes)
-    losses = criterion(pred_logits, pred_boxes, targets)
-
+    
+    # Warmup
+    for _ in range(3):
+        losses = criterion(pred_logits, pred_boxes, targets)
+    torch.cuda.synchronize()
+    
+    # Profile
+    with profile(
+        activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+        record_shapes=True,
+        with_stack=True,
+    ) as prof:
+        for _ in range(5):
+            losses = criterion(pred_logits, pred_boxes, targets)
+            torch.cuda.synchronize()
+    
+    # Print table sorted by CUDA time
+    print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=30))
+    
+    # Export for Chrome trace viewer (open chrome://tracing and load this file)
+    prof.export_chrome_trace("loss_trace.json")
+    print("\nTrace saved to loss_trace.json - open in chrome://tracing")

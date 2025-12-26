@@ -1,0 +1,35 @@
+# DETR Training Configuration
+
+# Run settings
+run_name: "detr_dinov2_base_640"
+output_dir: "./runs"
+wandb_project: "detr-training"
+
+# Data
+coco_dir: "/home/ian/fiftyone/coco-2017"
+resolution: 640
+num_workers: 4
+
+# Model
+backbone: "facebook/dinov3-vits16-pretrain-lvd1689m"
+num_queries: 100
+query_layers: 4
+
+# Training
+epochs: 72
+batch_size: 64
+lr: 1e-4
+lr_backbone: 1e-5
+weight_decay: 1e-4
+use_amp: true
+
+# Loss coefficients
+loss_coef_class: 1.0
+loss_coef_bbox: 5.0
+loss_coef_giou: 2.0
+
+# Checkpointing
+keep_last_checkpoints: 5
+
+# Device
+device: "cuda"
