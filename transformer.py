@@ -2,6 +2,7 @@ import torch
 from torch import nn
 from transformers import AutoModel, AutoImageProcessor
 from tqdm import tqdm
+import numpy as np
 
 
 class DetectionTransformer(nn.Module):
@@ -86,15 +87,88 @@ class DetectionTransformer(nn.Module):
 
 
 if __name__ == "__main__":
-    image = torch.randn(1, 3, 640, 640)
+    import cv2
+    import torch.nn.functional as F
+
+    COCO_CLASSES = [
+        "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat",
+        "traffic light", "fire hydrant", "stop sign", "parking meter", "bench", "bird", "cat",
+        "dog", "horse", "sheep", "cow", "elephant", "bear", "zebra", "giraffe", "backpack",
+        "umbrella", "handbag", "tie", "suitcase", "frisbee", "skis", "snowboard", "sports ball",
+        "kite", "baseball bat", "baseball glove", "skateboard", "surfboard", "tennis racket",
+        "bottle", "wine glass", "cup", "fork", "knife", "spoon", "bowl", "banana", "apple",
+        "sandwich", "orange", "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair",
+        "couch", "potted plant", "bed", "dining table", "toilet", "tv", "laptop", "mouse",
+        "remote", "keyboard", "cell phone", "microwave", "oven", "toaster", "sink", "refrigerator",
+        "book", "clock", "vase", "scissors", "teddy bear", "hair drier", "toothbrush"
+    ]
+
+    
+    weights_path = "runs/detr_dinov3_small_640_1/checkpoints/checkpoint_best.pt"
+    cv_image = cv2.imread("test.jpg")
+    orig_h, orig_w, _ = cv_image.shape
+    image = torch.from_numpy(cv_image).permute(2, 0, 1).float() / 255.0
+    image = F.interpolate(image.unsqueeze(0), size=(640, 640), mode='bilinear', align_corners=False).squeeze(0)
+    mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+    std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+    image = (image - mean) / std
+    image = image.to("cuda")
+
+    # Load checkpoint
+    checkpoint = torch.load(weights_path, weights_only=False)
+    # Strip the "_orig_mod." prefix from all keys
+    state_dict = checkpoint['model_state_dict']
+    new_state_dict = {k.replace("_orig_mod.", ""): v for k, v in state_dict.items()}
+    # Load into uncompiled model
+    cfg = checkpoint['config']
     model = DetectionTransformer(
-        backbone_name="facebook/dinov3-vits16-pretrain-lvd1689m",
-        num_classes=2,
-        query_layers=4,
-        num_queries=100,
+        backbone_name=cfg["backbone"],
+        num_classes=80,
+        num_queries=cfg["num_queries"],
+        query_layers=cfg["query_layers"],
     )
+    model.load_state_dict(new_state_dict)
     model.to("cuda")
-    image.to("cuda")
-    for i in tqdm(range(100)):
-        model([image] * 16)
-    # print(model([image]))
+    model.eval()
+    
+    print(image.shape)
+    with torch.no_grad():
+        for i in tqdm(range(10)):
+            model(image.unsqueeze(0))
+        results = model(image.unsqueeze(0))
+    
+    for box, scores in zip(results["pred_boxes"][0].cpu().detach().numpy(), results["pred_logits"][0].cpu().detach()):
+        scores = torch.sigmoid(scores).numpy()
+        class_id = np.argmax(scores)
+        score = scores[class_id]
+        if score < 0.4:
+            continue
+        
+        cx = box[0] * orig_w
+        cy = box[1] * orig_h
+        w = box[2] * orig_w
+        h = box[3] * orig_h
+        x1 = int(max(0, cx - w / 2))
+        y1 = int(max(0, cy - h / 2))
+        x2 = int(min(orig_w, cx + w / 2))
+        y2 = int(min(orig_h, cy + h / 2))
+        
+        # Draw bounding box
+        cv2.rectangle(cv_image, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        
+        # Create label text
+        label = f"{COCO_CLASSES[class_id]}: {score:.2f}"
+        
+        # Get text size for background rectangle
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 0.5
+        thickness = 1
+        (text_w, text_h), baseline = cv2.getTextSize(label, font, font_scale, thickness)
+        
+        # Draw filled rectangle behind text
+        cv2.rectangle(cv_image, (x1, y1 - text_h - 8), (x1 + text_w + 4, y1), (0, 255, 0), -1)
+        
+        # Draw text
+        cv2.putText(cv_image, label, (x1 + 2, y1 - 4), font, font_scale, (0, 0, 0), thickness)
+    
+    cv2.imwrite("test_output.jpg", cv_image)

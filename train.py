@@ -298,7 +298,7 @@ def train_one_epoch(
             torch.cuda.synchronize()
             t4 = time.time()
             
-            print(f"  unscale: {t4a-t3:.4f}, clip: {t4b-t4a:.4f}, optim_step: {t4c-t4b:.4f}, update: {t4-t4c:.4f}")
+            # print(f"  unscale: {t4a-t3:.4f}, clip: {t4b-t4a:.4f}, optim_step: {t4c-t4b:.4f}, update: {t4-t4c:.4f}")
         else:
             loss.backward()
             torch.cuda.synchronize()
@@ -309,7 +309,7 @@ def train_one_epoch(
             torch.cuda.synchronize()
             t4 = time.time()
         
-        print(f"forward: {t1-t0:.4f}, loss: {t2-t1:.4f}, backward: {t3-t2:.4f}, step: {t4-t3:.4f}")
+        # print(f"forward: {t1-t0:.4f}, loss: {t2-t1:.4f}, backward: {t3-t2:.4f}, step: {t4-t3:.4f}")
 
     
         total_loss += losses["loss"].item()
@@ -438,14 +438,6 @@ def main():
     device = torch.device(cfg.get("device", "cuda" if torch.cuda.is_available() else "cpu"))
     log_message(log_file, f"Using device: {device}")
     
-    # Initialize wandb
-    wandb.init(
-        project=cfg.get("wandb_project", "detr-training"),
-        name=cfg["run_name"],
-        config=cfg,
-        dir=str(run_dir),
-    )
-    
     # Datasets
     train_dataset = COCODetectionDataset(
         root=cfg["coco_dir"],
@@ -495,7 +487,7 @@ def main():
     # Loss
     criterion = DETRLoss(
         num_classes=NUM_CLASSES,
-        loss_coef_class=cfg.get("loss_coef_class", 1.0),
+        loss_coef_class=cfg.get("loss_coef_class", 2.0),
         loss_coef_bbox=cfg.get("loss_coef_bbox", 5.0),
         loss_coef_giou=cfg.get("loss_coef_giou", 2.0),
     )
@@ -508,7 +500,7 @@ def main():
     optimizer = AdamW(param_groups, weight_decay=cfg.get("weight_decay", 1e-4))
     
     # Scheduler
-    scheduler = CosineAnnealingLR(optimizer, T_max=cfg["epochs"], eta_min=cfg["lr"] * 0.01)
+    # scheduler = CosineAnnealingLR(optimizer, T_max=cfg["epochs"], eta_min=cfg["lr"] * 0.01)
     
     # Mixed precision
     use_amp = bool(cfg.get("use_amp", True))
@@ -518,6 +510,15 @@ def main():
     best_ap = 0.0
 
     model = torch.compile(model, mode="max-autotune")
+
+    # Initialize wandb
+    wandb.init(
+        project=cfg.get("wandb_project", "detr-training"),
+        name=cfg["run_name"],
+        config=cfg,
+        dir=str(run_dir),
+    )
+    
     
     for epoch in range(1, cfg["epochs"] + 1):
         log_message(log_file, f"\n{'='*60}")
@@ -527,7 +528,7 @@ def main():
         train_losses = train_one_epoch(
             model, criterion, train_loader, optimizer, device, scaler, use_amp, epoch, log_file
         )
-        scheduler.step()
+        # scheduler.step()
         
         log_message(log_file, f"Train - loss: {train_losses['loss']:.4f}, "
                              f"cls: {train_losses['loss_class']:.4f}, "
@@ -566,13 +567,18 @@ def main():
             "val/AP_large": metrics["AP_large"],
             "lr": optimizer.param_groups[0]["lr"],
         })
+
+        if hasattr(model, '_orig_mod'):
+            model_state = model._orig_mod.state_dict()
+        else:
+            model_state = model.state_dict()
         
         # Save checkpoint
         checkpoint = {
             "epoch": epoch,
-            "model_state_dict": model.state_dict(),
+            "model_state_dict": model_state,
             "optimizer_state_dict": optimizer.state_dict(),
-            "scheduler_state_dict": scheduler.state_dict(),
+            # "scheduler_state_dict": scheduler.state_dict(),
             "train_losses": train_losses,
             "val_losses": val_losses,
             "metrics": metrics,
