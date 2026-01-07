@@ -28,6 +28,11 @@ loss_coef_class: 2.0
 loss_coef_bbox: 5.0
 loss_coef_giou: 2.0
 
+# Early loss coefficients
+early_loss: true
+early_loss_coefs: [1.0, 1.0, 1.0, 1.0] # must be same length as query_layers
+use_separate_heads: false
+
 # Checkpointing
 keep_last_checkpoints: 5
 

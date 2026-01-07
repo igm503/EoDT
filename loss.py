@@ -4,13 +4,13 @@ Simplified DETR Loss Function (based on RF-DETR)
 Single-file implementation with:
 - Hungarian matching
 - IoU-aware BCE classification loss (sigmoid)
-- L1 bounding box loss  
+- L1 bounding box loss
 - GIoU loss
 
 Usage:
     criterion = DETRLoss(num_classes=80)
     losses = criterion(pred_logits, pred_boxes, targets)
-    
+
 Where:
     pred_logits: (batch, num_queries, num_classes) - raw logits
     pred_boxes: (batch, num_queries, 4) - cxcywh normalized [0,1]
@@ -30,6 +30,7 @@ import numpy as np
 # ============================================================================
 # Box utilities
 # ============================================================================
+
 
 def box_cxcywh_to_xyxy(x):
     x_c, y_c, w, h = x.unbind(-1)
@@ -68,7 +69,7 @@ def box_iou(boxes1, boxes2):
 def generalized_box_iou(boxes1, boxes2):
     """
     GIoU from https://giou.stanford.edu/
-    
+
     Args:
         boxes1: (N, 4) xyxy format
         boxes2: (M, 4) xyxy format
@@ -90,10 +91,11 @@ def generalized_box_iou(boxes1, boxes2):
 # Hungarian Matcher
 # ============================================================================
 
+
 class HungarianMatcher(nn.Module):
     """
     Computes assignment between predictions and ground truth.
-    
+
     Cost = cost_class * C_class + cost_bbox * C_bbox + cost_giou * C_giou
     """
 
@@ -137,25 +139,22 @@ class HungarianMatcher(nn.Module):
         # Classification cost: focal-weighted
         alpha = self.focal_alpha
         gamma = self.focal_gamma
-        neg_cost_class = (1 - alpha) * (out_prob ** gamma) * (-F.logsigmoid(-pred_logits.flatten(0, 1)))
-        pos_cost_class = alpha * ((1 - out_prob) ** gamma) * (-F.logsigmoid(pred_logits.flatten(0, 1)))
+        neg_cost_class = (
+            (1 - alpha) * (out_prob**gamma) * (-F.logsigmoid(-pred_logits.flatten(0, 1)))
+        )
+        pos_cost_class = (
+            alpha * ((1 - out_prob) ** gamma) * (-F.logsigmoid(pred_logits.flatten(0, 1)))
+        )
         cost_class = pos_cost_class[:, tgt_ids] - neg_cost_class[:, tgt_ids]
 
         # L1 bbox cost
         cost_bbox = torch.cdist(out_bbox, tgt_bbox, p=1)
 
         # GIoU cost
-        cost_giou = -generalized_box_iou(
-            box_cxcywh_to_xyxy(out_bbox),
-            box_cxcywh_to_xyxy(tgt_bbox)
-        )
+        cost_giou = -generalized_box_iou(box_cxcywh_to_xyxy(out_bbox), box_cxcywh_to_xyxy(tgt_bbox))
 
         # Combined cost matrix
-        C = (
-            self.cost_class * cost_class +
-            self.cost_bbox * cost_bbox +
-            self.cost_giou * cost_giou
-        )
+        C = self.cost_class * cost_class + self.cost_bbox * cost_bbox + self.cost_giou * cost_giou
         C = C.view(bs, num_queries, -1)
 
         # Handle NaN/Inf (on GPU before transfer)
@@ -172,13 +171,12 @@ class HungarianMatcher(nn.Module):
         sizes = [len(v["boxes"]) for v in targets]
         g_num_queries = num_queries // self.group_detr
         C_list = C.split(g_num_queries, dim=1)
-        
+
         indices = []
         for g_i in range(self.group_detr):
             C_g = C_list[g_i]
             indices_g = [
-                linear_sum_assignment(c[i].numpy())
-                for i, c in enumerate(C_g.split(sizes, -1))
+                linear_sum_assignment(c[i].numpy()) for i, c in enumerate(C_g.split(sizes, -1))
             ]
             if g_i == 0:
                 indices = indices_g
@@ -186,13 +184,16 @@ class HungarianMatcher(nn.Module):
                 indices = [
                     (
                         np.concatenate([idx1[0], idx2[0] + g_num_queries * g_i]),
-                        np.concatenate([idx1[1], idx2[1]])
+                        np.concatenate([idx1[1], idx2[1]]),
                     )
                     for idx1, idx2 in zip(indices, indices_g)
                 ]
 
         return [
-            (torch.as_tensor(i, dtype=torch.int64), torch.as_tensor(j, dtype=torch.int64))
+            (
+                torch.as_tensor(i, dtype=torch.int64),
+                torch.as_tensor(j, dtype=torch.int64),
+            )
             for i, j in indices
         ]
 
@@ -200,6 +201,7 @@ class HungarianMatcher(nn.Module):
 # ============================================================================
 # Loss Functions
 # ============================================================================
+
 
 def sigmoid_focal_loss(inputs, targets, num_boxes, alpha=0.25, gamma=2.0):
     """
@@ -220,6 +222,7 @@ def sigmoid_focal_loss(inputs, targets, num_boxes, alpha=0.25, gamma=2.0):
 # ============================================================================
 # Main Loss Class
 # ============================================================================
+
 
 class DETRLoss(nn.Module):
     """
@@ -267,7 +270,7 @@ class DETRLoss(nn.Module):
     def loss_labels(self, pred_logits, pred_boxes, targets, indices, num_boxes):
         """
         IoU-aware BCE classification loss.
-        
+
         Uses IoU between predicted and GT boxes as soft target weight.
         """
         idx = self._get_src_permutation_idx(indices)
@@ -278,10 +281,9 @@ class DETRLoss(nn.Module):
         target_boxes = torch.cat([t["boxes"][i] for t, (_, i) in zip(targets, indices)], dim=0)
 
         # Compute IoU for matched pairs
-        iou_targets = torch.diag(box_iou(
-            box_cxcywh_to_xyxy(src_boxes.detach()),
-            box_cxcywh_to_xyxy(target_boxes)
-        )[0])
+        iou_targets = torch.diag(
+            box_iou(box_cxcywh_to_xyxy(src_boxes.detach()), box_cxcywh_to_xyxy(target_boxes))[0]
+        )
         pos_ious = iou_targets.clone().detach()
 
         # IoU-aware BCE
@@ -291,7 +293,7 @@ class DETRLoss(nn.Module):
 
         # Initialize weights
         pos_weights = torch.zeros_like(pred_logits)
-        neg_weights = prob ** gamma
+        neg_weights = prob**gamma
 
         # Build index for positive samples
         pos_ind = (idx[0], idx[1], target_classes_o)
@@ -304,7 +306,9 @@ class DETRLoss(nn.Module):
         neg_weights[pos_ind] = 1 - t.to(neg_weights.dtype)
 
         # Numerically stable formulation
-        loss_ce = neg_weights * pred_logits - F.logsigmoid(pred_logits) * (pos_weights + neg_weights)
+        loss_ce = neg_weights * pred_logits - F.logsigmoid(pred_logits) * (
+            pos_weights + neg_weights
+        )
         loss_ce = loss_ce.sum() / num_boxes
 
         return {"loss_class": loss_ce}
@@ -322,21 +326,21 @@ class DETRLoss(nn.Module):
         loss_bbox = loss_bbox.sum() / num_boxes
 
         # GIoU loss
-        loss_giou = 1 - torch.diag(generalized_box_iou(
-            box_cxcywh_to_xyxy(src_boxes),
-            box_cxcywh_to_xyxy(target_boxes)
-        ))
+        loss_giou = 1 - torch.diag(
+            generalized_box_iou(box_cxcywh_to_xyxy(src_boxes), box_cxcywh_to_xyxy(target_boxes))
+        )
         loss_giou = loss_giou.sum() / num_boxes
 
         return {"loss_bbox": loss_bbox, "loss_giou": loss_giou}
 
-    def forward(self, pred_logits, pred_boxes, targets):
+    def compute_loss(self, outputs, targets):
         """
         Compute DETR losses.
 
         Args:
-            pred_logits: (batch, num_queries, num_classes) raw logits
-            pred_boxes: (batch, num_queries, 4) cxcywh normalized [0,1]
+            outputs: dict with
+                "pred_logits" (#batch x #queries x #classes) and
+                "pred_boxes" (#batch x #queries x 4)
             targets: list of dicts, each with:
                 - "boxes": (N, 4) cxcywh normalized
                 - "labels": (N,) class indices
@@ -344,16 +348,18 @@ class DETRLoss(nn.Module):
         Returns:
             dict with loss_class, loss_bbox, loss_giou, and total loss
         """
-        device = pred_logits.device
-        
+        logits = outputs["pred_logits"]
+        boxes = outputs["pred_boxes"]
+
+        device = logits.device
+
         # Move targets to device
         targets = [
-            {"boxes": t["boxes"].to(device), "labels": t["labels"].to(device)}
-            for t in targets
+            {"boxes": t["boxes"].to(device), "labels": t["labels"].to(device)} for t in targets
         ]
 
         # Hungarian matching
-        indices = self.matcher(pred_logits, pred_boxes, targets)
+        indices = self.matcher(logits, boxes, targets)
 
         # Move indices to device
         indices = [(i.to(device), j.to(device)) for i, j in indices]
@@ -365,15 +371,42 @@ class DETRLoss(nn.Module):
 
         # Compute losses
         losses = {}
-        losses.update(self.loss_labels(pred_logits, pred_boxes, targets, indices, num_boxes))
-        losses.update(self.loss_boxes(pred_boxes, targets, indices, num_boxes))
+        losses.update(self.loss_labels(logits, boxes, targets, indices, num_boxes))
+        losses.update(self.loss_boxes(boxes, targets, indices, num_boxes))
 
         # Total weighted loss
         losses["loss"] = (
-            self.loss_coef_class * losses["loss_class"] +
-            self.loss_coef_bbox * losses["loss_bbox"] +
-            self.loss_coef_giou * losses["loss_giou"]
+            self.loss_coef_class * losses["loss_class"]
+            + self.loss_coef_bbox * losses["loss_bbox"]
+            + self.loss_coef_giou * losses["loss_giou"]
         )
+
+        return losses
+
+    def forward(self, outputs, targets, early_loss_coeffs=[]):
+        """Compute loss including auxiliary losses from intermediate layers."""
+        losses = {}
+
+        all_outputs = outputs.get("aux_outputs", [])
+        final_outputs = {
+            "pred_logits": outputs["pred_logits"],
+            "pred_boxes": outputs["pred_boxes"],
+        }
+        all_outputs.append(final_outputs)
+
+        assert len(all_outputs) == len(early_loss_coeffs)
+
+        for i, (layer_outputs, coeff) in enumerate(zip(all_outputs, early_loss_coeffs)):
+            layer_losses = self.compute_loss(layer_outputs, targets)
+            for k, v in layer_losses.items():
+                losses[f"{k}_{i}"] = v
+
+            loss_contribution = coeff * layer_losses["loss"]
+
+            if "loss" not in losses:
+                losses["loss"] = loss_contribution
+            else:
+                losses["loss"] = losses["loss"] + loss_contribution
 
         return losses
 
@@ -386,22 +419,22 @@ class DETRLoss(nn.Module):
 if __name__ == "__main__":
     import time
     from torch.profiler import profile, record_function, ProfilerActivity
-    
+
     torch.manual_seed(42)
-    
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
-    
+
     batch_size = 64
     num_queries = 300
     num_classes = 80
     num_gt_per_image = 20
-    
+
     pred_logits = torch.randn(batch_size, num_queries, num_classes, device=device)
     pred_boxes = torch.sigmoid(torch.randn(batch_size, num_queries, 4, device=device))
 
     print(pred_logits.shape, pred_boxes.shape)
-    
+
     targets = [
         {
             "boxes": torch.rand(num_gt_per_image, 4),
@@ -409,14 +442,14 @@ if __name__ == "__main__":
         }
         for _ in range(batch_size)
     ]
-    
+
     criterion = DETRLoss(num_classes=num_classes)
-    
+
     # Warmup
     for _ in range(3):
         losses = criterion(pred_logits, pred_boxes, targets)
     torch.cuda.synchronize()
-    
+
     # Profile
     with profile(
         activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
@@ -426,10 +459,10 @@ if __name__ == "__main__":
         for _ in range(5):
             losses = criterion(pred_logits, pred_boxes, targets)
             torch.cuda.synchronize()
-    
+
     # Print table sorted by CUDA time
     print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=30))
-    
+
     # Export for Chrome trace viewer (open chrome://tracing and load this file)
     prof.export_chrome_trace("loss_trace.json")
     print("\nTrace saved to loss_trace.json - open in chrome://tracing")
