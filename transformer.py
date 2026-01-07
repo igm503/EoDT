@@ -49,6 +49,15 @@ class DetectionTransformer(nn.Module):
                 )
             )
 
+            # Initialize bbox head for small outputs
+            nn.init.constant_(self.bbox_mlp[-1][-1].weight, 0)
+            nn.init.constant_(self.bbox_mlp[-1][-1].bias, 0)
+
+            # Initialize cls head with prior for focal loss
+            prior_prob = 0.01
+            bias_value = -np.log((1 - prior_prob) / prior_prob)
+            nn.init.constant_(self.cls_mlp[-1][-1].bias, bias_value)
+
         self.query_tokens = nn.Parameter(torch.randn(num_queries, hidden_dim) * 0.02)
 
         # Find encoder layers
@@ -61,14 +70,6 @@ class DetectionTransformer(nn.Module):
 
         self.first_query_layer = max(0, len(self.encoder_layers) - query_layers)
 
-        # Initialize bbox head for small outputs
-        nn.init.constant_(self.bbox_mlp[-1].weight, 0)
-        nn.init.constant_(self.bbox_mlp[-1].bias, 0)
-
-        # Initialize cls head with prior for focal loss
-        prior_prob = 0.01
-        bias_value = -np.log((1 - prior_prob) / prior_prob)
-        nn.init.constant_(self.cls_mlp[-1].bias, bias_value)
 
     def forward(self, x: torch.Tensor, return_intermediate: bool = False):
         batch_size = x.shape[0]

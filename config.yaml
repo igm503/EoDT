@@ -1,14 +1,14 @@
 # DETR Training Configuration
 
 # Run settings
-run_name: "detr_dinov3_large_640_bs8"
+run_name: "detr_dinov3_large_640_bs8_early"
 output_dir: "./runs"
 
 
 # Data
 coco_dir: "/home/ian/fiftyone/coco-2017"
 resolution: 640
-num_workers: 4
+num_workers: 2
 
 # Model
 backbone: "facebook/dinov3-vitl16-pretrain-lvd1689m"
@@ -18,13 +18,13 @@ query_layers: 4
 # Training
 epochs: 72
 batch_size: 8
-lr: 1e-5
+lr: 1e-4
 lr_backbone: 1e-5
 weight_decay: 1e-4
 use_amp: true
 
 # Loss coefficients
-loss_coef_class: 2.0
+loss_coef_class: 1.0
 loss_coef_bbox: 5.0
 loss_coef_giou: 2.0
 
@@ -34,7 +34,7 @@ early_loss_coefs: [1.0, 1.0, 1.0, 1.0] # must be same length as query_layers
 use_separate_heads: false
 
 # Checkpointing
-keep_last_checkpoints: 5
+keep_last_checkpoints: 1
 
 # Device
 device: "cuda"

@@ -270,6 +270,11 @@ def train_one_epoch(
         total_loss += losses["loss"].item()
         num_batches += 1
 
+        if early_loss_coeffs:
+            final_loss_idx = len(early_loss_coeffs) - 1
+        else:
+            final_loss_idx = 0
+
         for k, v in losses.items():
             if k not in total_losses:
                 total_losses[k] = 0.0
@@ -278,10 +283,11 @@ def train_one_epoch(
         # Update progress bar
         pbar.set_postfix(
             {
-                "loss": f"{losses['loss'].item():.4f}",
-                "cls": f"{losses['loss_class'].item():.4f}",
-                "bbox": f"{losses['loss_bbox'].item():.4f}",
-                "giou": f"{losses['loss_giou'].item():.4f}",
+                "loss": f"{losses['loss'].item():.4f}",  # total loss
+                "loss_final": f"{losses[f'loss_{final_loss_idx}'].item():.4f}",
+                "cls": f"{losses[f'loss_class_{final_loss_idx}'].item():.4f}",
+                "bbox": f"{losses[f'loss_bbox_{final_loss_idx}'].item():.4f}",
+                "giou": f"{losses[f'loss_giou_{final_loss_idx}'].item():.4f}",
             }
         )
 
