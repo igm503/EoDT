@@ -472,7 +472,7 @@ def main():
     optimizer = AdamW(param_groups, weight_decay=cfg.get("weight_decay", 1e-4))
 
     # Scheduler
-    # scheduler = CosineAnnealingLR(optimizer, T_max=cfg["epochs"], eta_min=cfg["lr"] * 0.01)
+    scheduler = CosineAnnealingLR(optimizer, T_max=cfg["epochs"], eta_min=cfg["lr"] * 0.01)
 
     # Mixed precision
     use_amp = bool(cfg.get("use_amp", True))
@@ -507,14 +507,20 @@ def main():
             epoch,
             early_loss_coeffs,
         )
-        # scheduler.step()
+
+        scheduler.step()
+
+        if early_loss_coeffs:
+            final_loss_idx = len(early_loss_coeffs) - 1
+        else:
+            final_loss_idx = 0
 
         log_message(
             log_file,
             f"Train - loss: {train_losses['loss']:.4f}, "
-            # f"cls: {train_losses['loss_class']:.4f}, "
-            # f"bbox: {train_losses['loss_bbox']:.4f}, "
-            # f"giou: {train_losses['loss_giou']:.4f}",
+            f"cls: {train_losses[f'loss_class_{final_loss_idx}']:.4f}, "
+            f"bbox: {train_losses[f'loss_bbox_{final_loss_idx}']:.4f}, "
+            f"giou: {train_losses[f'loss_giou_{final_loss_idx}']:.4f}",
         )
 
         # Validate
@@ -522,9 +528,9 @@ def main():
         log_message(
             log_file,
             f"Val   - loss: {val_losses['loss']:.4f}, "
-            # f"cls: {val_losses['loss_class']:.4f}, "
-            # f"bbox: {val_losses['loss_bbox']:.4f}, "
-            # f"giou: {val_losses['loss_giou']:.4f}",
+            f"cls: {val_losses[f'loss_class_{final_loss_idx}']:.4f}, "
+            f"bbox: {val_losses[f'loss_bbox_{final_loss_idx}']:.4f}, "
+            f"giou: {val_losses[f'loss_giou_{final_loss_idx}']:.4f}",
         )
 
         # COCO evaluation
@@ -539,17 +545,26 @@ def main():
         # Log to wandb
         wandb_update = {
             "epoch": epoch,
-            "val/ap": metrics["AP"],
-            "val/ap50": metrics["AP50"],
-            "val/ap75": metrics["AP75"],
-            "val/ap_small": metrics["AP_small"],
-            "val/ap_medium": metrics["AP_medium"],
-            "val/ap_large": metrics["AP_large"],
+            "val/AP": metrics["AP"],
+            "val/AP50": metrics["AP50"],
+            "val/AP75": metrics["AP75"],
+            "val/AP_small": metrics["AP_small"],
+            "val/AP_medium": metrics["AP_medium"],
+            "val/AP_large": metrics["AP_large"],
             "lr": optimizer.param_groups[0]["lr"],
         }
 
-        wandb_update.update({f"train/{k}": v for k, v in train_losses.items()})
-        wandb_update.update({f"val/{k}": v for k, v in val_losses.items()})
+        for k, v in train_losses.items():
+            if k.endswith(f"_{final_loss_idx}"):
+                wandb_update[f"train/{k[:-2]}"] = v
+            else:
+                wandb_update[f"train/{k}"] = v
+
+        for k, v in val_losses.items():
+            if k.endswith(f"_{final_loss_idx}"):
+                wandb_update[f"val/{k[:-2]}"] = v
+            else:
+                wandb_update[f"val/{k}"] = v
 
         wandb.log(wandb_update)
 
@@ -563,7 +578,7 @@ def main():
             "epoch": epoch,
             "model_state_dict": model_state,
             "optimizer_state_dict": optimizer.state_dict(),
-            # "scheduler_state_dict": scheduler.state_dict(),
+            "scheduler_state_dict": scheduler.state_dict(),
             "train_losses": train_losses,
             "val_losses": val_losses,
             "metrics": metrics,
